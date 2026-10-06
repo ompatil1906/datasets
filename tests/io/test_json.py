@@ -205,6 +205,19 @@ def load_json_lines(buffer):
 
 
 class TestJsonDatasetWriter:
+    def test_to_json_lines_false_stitches_batches(self, dataset):
+        # batch_size smaller than the dataset used to emit several JSON arrays
+        # (or raise) instead of one document. See huggingface/datasets#7037.
+        with io.BytesIO() as buffer:
+            JsonDatasetWriter(dataset, buffer, lines=False, batch_size=3).write()
+            buffer.seek(0)
+            exported_content = load_json(buffer)
+        assert isinstance(exported_content, list)
+        assert len(exported_content) == len(dataset)
+        assert exported_content[0]["id"] == dataset[0]["id"]
+        assert exported_content[-1]["id"] == dataset[-1]["id"]
+
+
     @pytest.mark.parametrize("lines, load_json_function", [(True, load_json_lines), (False, load_json)])
     def test_dataset_to_json_lines(self, lines, load_json_function, dataset):
         with io.BytesIO() as buffer:

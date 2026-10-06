@@ -105,9 +105,13 @@ class JsonDatasetWriter:
         if compression not in [None, "infer", "gzip", "bz2", "xz"]:
             raise NotImplementedError(f"`datasets` currently does not support {compression} compression")
 
-        if not lines and self.batch_size < self.dataset.num_rows:
+        # records + lines=False is one JSON array. Batches are stitched below.
+        # Other orients cannot be concatenated from independent batch documents.
+        if not lines and orient != "records" and self.batch_size < self.dataset.num_rows:
             raise NotImplementedError(
-                "Output JSON will not be formatted correctly when lines = False and batch_size < number of rows in the dataset. Use pandas.DataFrame.to_json() instead."
+                "Output JSON will not be formatted correctly when lines = False, "
+                "orient is not 'records', and batch_size < number of rows in the dataset. "
+                "Use pandas.DataFrame.to_json() instead."
             )
 
         if isinstance(self.path_or_buf, (str, bytes, os.PathLike)):
@@ -152,6 +156,48 @@ class JsonDatasetWriter:
             json_str += "\n"
         return json_str.encode(self.encoding)
 
+    def _write_records_array(self, file_obj: BinaryIO, orient, lines, to_json_kwargs) -> int:
+        """Write orient='records', lines=False as a single JSON array.
+
+        pandas emits one array per batch. Concatenating those arrays makes
+        ``json.loads`` fail once the dataset is larger than ``batch_size``
+        (huggingface/datasets#7037). Strip each batch's wrapping brackets and
+        join the elements instead.
+        """
+        written = 0
+        written += file_obj.write(b"[")
+        first = True
+
+        def emit(json_bytes: bytes) -> None:
+            nonlocal written, first
+            text = json_bytes.decode(self.encoding).strip()
+            if len(text) < 2 or text[0] != "[" or text[-1] != "]":
+                raise ValueError("Expected a JSON array from DataFrame.to_json(orient='records', lines=False).")
+            body = text[1:-1].strip()
+            if not body:
+                return
+            if not first:
+                written += file_obj.write(b",")
+            first = False
+            written += file_obj.write(body.encode(self.encoding))
+
+        num_rows = len(self.dataset)
+        offsets = [(offset, orient, lines, to_json_kwargs) for offset in range(0, num_rows, self.batch_size)]
+        if self.num_proc is None or self.num_proc == 1:
+            for args in hf_tqdm(offsets, unit="ba", desc="Creating json from Arrow format"):
+                emit(self._batch_json(args))
+        else:
+            with multiprocessing.Pool(self.num_proc) as pool:
+                for json_str in hf_tqdm(
+                    pool.imap(self._batch_json, offsets),
+                    total=len(offsets),
+                    unit="ba",
+                    desc="Creating json from Arrow format",
+                ):
+                    emit(json_str)
+        written += file_obj.write(b"]\n")
+        return written
+
     def _write(
         self,
         file_obj: BinaryIO,
@@ -163,6 +209,9 @@ class JsonDatasetWriter:
 
         Caller is responsible for opening and closing the handle.
         """
+        if not lines and orient == "records":
+            return self._write_records_array(file_obj, orient, lines, to_json_kwargs)
+
         written = 0
 
         if self.num_proc is None or self.num_proc == 1:
