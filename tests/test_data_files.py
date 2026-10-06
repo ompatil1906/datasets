@@ -690,3 +690,21 @@ def test_get_data_patterns_from_directory_with_the_word_data_twice(tmp_path):
     data_file.touch()
     data_file_patterns = get_data_patterns(repo_dir.as_posix())
     assert data_file_patterns == {"train": ["data/train-[0-9][0-9][0-9][0-9][0-9]-of-[0-9][0-9][0-9][0-9][0-9]*.*"]}
+
+
+def test_DataFilesPatternsList_add_keeps_patterns_and_extensions(tmp_path):
+    csv_file = tmp_path / "train.csv"
+    json_file = tmp_path / "train.json"
+    csv_file.write_text("a\n1\n")
+    json_file.write_text('{"a": 1}\n')
+
+    csv_patterns = DataFilesPatternsList.from_patterns(["*.csv"])
+    json_patterns = DataFilesPatternsList(["*.json"], [[".json"]])
+    combined = csv_patterns + json_patterns
+
+    assert isinstance(combined, DataFilesPatternsList)
+    assert combined == ["*.csv", "*.json"]
+    assert combined.allowed_extensions == [None, [".json"]]
+
+    resolved = combined.resolve(tmp_path.as_posix())
+    assert [Path(path).name for path in resolved] == ["train.csv", "train.json"]

@@ -755,8 +755,13 @@ class DataFilesPatternsList(list[str]):
         super().__init__(patterns)
         self.allowed_extensions = allowed_extensions
 
-    def __add__(self, other):
-        return DataFilesList([*self, *other], self.allowed_extensions + other.allowed_extensions)
+    def __add__(self, other: "DataFilesPatternsList") -> "DataFilesPatternsList":
+        # Concatenate pattern lists, not resolved files. DataFilesList.__add__ stores
+        # origin metadata; reusing it here put allowed_extensions in that slot and
+        # dropped the pattern-list type, so resolve() then failed.
+        return DataFilesPatternsList(
+            [*self, *other], self.allowed_extensions + other.allowed_extensions
+        )
 
     @classmethod
     def from_patterns(
